@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-29T10:56:40.637217+09:00",
+  "source": "synthetic",
+  "python": "3.12.14",
+  "platform": "Windows-11-10.0.26200-SP0",
+  "packages": {
+    "requests": "2.34.2",
+    "python-dotenv": "1.2.4",
+    "defusedxml": "0.7.1",
+    "matplotlib": "3.11.2",
+    "numpy": "2.5.4",
+    "openpyxl": "3.1.5",
+    "Pillow": "12.3.0"
+  },
+  "snapshot_sha256": "2a78fb7a88fe2fc62be53e3c8414edd281f6883bf6ac02e9d2bda4d29721d06a",
+  "notes_sha256": "34212b657e5203a1c2f49ae87dc1dc0f6ab9aaaeaf59b9493fe7b5a1885e7d13",
+  "receivables_scope": "total_trade",
+  "turnover_change": "0.30",
+  "margin_change_pp": "5",
+  "font": "Malgun Gothic",
+  "start_year": 2023,
+  "end_year": 2025,
+  "peer_selection": "사용자가 선택한 비교기업; 업종 전체 표본 아님"
+}

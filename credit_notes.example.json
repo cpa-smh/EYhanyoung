@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "instructions": "아래는 입력 양식이며 실제 공시 데이터가 아닙니다. 모든 식별정보와 출처를 실제 공시로 바꾸세요. 금액은 원 단위 문자열, 모르는 항목은 null. 분석 시작연도 직전 연도부터 기입하세요.",
+  "records": [
+    {
+      "corp_code": "00000000",
+      "year": 2022,
+      "fs_div": "CFS",
+      "currency": "KRW",
+      "scope": "total_trade",
+      "reported_basis": "net",
+      "balance_date": "2022-12-31",
+      "rcept_no": "실제14자리접수번호",
+      "gross": null,
+      "allowance": null,
+      "net": null,
+      "ecl_expense": null,
+      "writeoffs": null,
+      "recoveries": null,
+      "other_movements": null,
+      "source_url": "https://dart.fss.or.kr/dsaf001/main.do?rcpNo=실제접수번호",
+      "source_ref": "주석 번호·표 제목·페이지·매출채권만 포함 여부와 순액/총액 확인 근거를 기입"
+    }
+  ]
+}
