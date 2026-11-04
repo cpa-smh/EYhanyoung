@@ -63,10 +63,10 @@ def test_peer_only_verified_candidates():
     source = SimpleNamespace(profile=lambda c: {"corp_cls": "Y", "acc_mt": "12", "induty_code": "26"},
         latest=lambda c, y: {"text": "사업의 내용 반도체 제조", "year": y, "source_url": "https://dart.fss.or.kr/"})
     def ask(name, *args):
-        if name == "peer_candidates":
-            return {"codes": [peer.code, "99999999"]}
-        return {"peers": [{"code": peer.code, "reason": "반도체", "differences": "규모", "target_quote": "반도체 제조", "peer_quote": "반도체 제조"},
-                          {"code": "99999999", "reason": "", "differences": "", "target_quote": "", "peer_quote": ""}], "limitations": "일부 후보"}
+        if name == "business_scan":
+            return {"summary": "반도체 제조", "quotes": ["반도체 제조"]}
+        return {"suitable": True, "score": 90, "reason": "반도체", "differences": "규모",
+                "target_quote": "반도체 제조", "peer_quote": "반도체 제조"}
     selected, evidence, _ = select_peers(SimpleNamespace(ask=ask), source, [target, peer], target, 2025)
     assert selected == [peer]
     assert "5개 미만" in evidence["limitations"]
@@ -108,3 +108,45 @@ def test_target_only_cli_mocked_end_to_end(monkeypatch, tmp_path):
     assert book["재무비율 계산"]["E7"].value == pytest.approx(.125)
     book.close()
     assert (out / "credit_notes.json").exists()
+
+
+def test_chunks_cover_entire_report_and_tail():
+    from disclosure_source import document_chunks
+    text = ("매출채권 자료\n" * 12000) + "마지막 ECL 핵심표"
+    chunks = list(document_chunks(text))
+    assert chunks[0]["start"] == 0 and chunks[-1]["end"] == len(text)
+    assert all(b["start"] <= a["end"] for a, b in zip(chunks, chunks[1:]))
+    assert "마지막 ECL 핵심표" in chunks[-1]["text"]
+
+
+def test_peers_beyond_twentieth_are_evaluated():
+    target = Company("00000001", "대상", "1")
+    peers = [Company(f"{i:08}", f"후보{i}", str(i)) for i in range(2, 27)]
+    visited = []
+    def latest(c, year):
+        visited.append(c.code)
+        return {"text": "사업의 내용 반도체 제조", "year": year, "source_url": "https://dart.fss.or.kr/"}
+    source = SimpleNamespace(profile=lambda c: {"corp_cls": "Y", "acc_mt": "12", "induty_code": "26"}, latest=latest)
+    def ask(name, *args):
+        if name == "business_scan":
+            return {"summary": "반도체 제조", "quotes": ["반도체 제조"]}
+        return {"suitable": True, "score": 90, "reason": "반도체", "differences": "규모", "target_quote": "반도체 제조", "peer_quote": "반도체 제조"}
+    selected, evidence, _ = select_peers(SimpleNamespace(ask=ask), source, [target, *peers], target, 2025, progress=lambda x: None)
+    assert len(visited) == 26 and peers[-1].code in visited
+    assert len(evidence["candidate_audit"]) == 25 and len(selected) == 10
+
+
+def test_credit_reads_tail_and_does_not_accept_conflicting_amounts():
+    text, response = credit_response()
+    calls = []
+    def ask(name, instruction, payload, schema):
+        calls.append(payload["text"])
+        result = deepcopy(response)
+        if text not in payload["text"]:
+            result["fs_div"] = "unknown"
+        return result
+    doc = {"text": "무관한 내용\n" * 15000 + text, "year": 2025, "corp_code": "00000001",
+           "rcept_no": "20260301000001", "source_url": "https://dart.fss.or.kr/"}
+    result = extract_credit(SimpleNamespace(ask=ask), doc, "total_trade")
+    assert len(calls) > 1 and result["gross"] == "100000000"
+    assert result["evidence"]["coverage"][-1]["end"] == len(doc["text"])

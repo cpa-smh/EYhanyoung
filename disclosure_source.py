@@ -41,24 +41,30 @@ def document_text(payload):
         raise DartError("공시 원문 ZIP/XML 파싱 실패") from None
 
 
-def excerpts(text, keywords, limit=24000):
-    """Bounded windows retain nearby headings, units and table column labels."""
-    ranges = []
-    pattern = "|".join(re.escape(k) for k in keywords)
-    for match in re.finditer(pattern, text, re.I):
-        start, end = max(0, match.start() - 1200), min(len(text), match.end() + 3000)
-        if ranges and start <= ranges[-1][1]:
-            ranges[-1][1] = max(end, ranges[-1][1])
-        else:
-            ranges.append([start, end])
-    chunks, size = [], 0
-    for start, end in ranges:
-        chunk = text[start:end][:limit - size]
-        chunks.append(f"[원문 문자 {start}:{start + len(chunk)}]\n" + chunk)
-        size += len(chunk)
-        if size >= limit:
+def document_chunks(text, size=24000, overlap=4000):
+    """Cover every character, with overlapping boundaries and carried section context.
+
+    size limits an individual request, never the amount of report processed.
+    Prefer paragraph/row boundaries; even a huge single row is covered in full.
+    """
+    if size <= overlap or overlap < 0:
+        raise ValueError("chunk size must exceed overlap")
+    start = 0
+    while start < len(text):
+        end = min(start + size, len(text))
+        if end < len(text):
+            boundary = text.rfind("\n", start + size // 2, end)
+            if boundary > start + overlap:
+                end = boundary + 1
+        # Carry the most recent section titles and table header/units. No body is dropped.
+        prefix = text[:start]
+        context_lines = [line for line in prefix.splitlines() if
+            (len(line) < 160 and any(k in line for k in ("재무제표", "주석", "단위", "당기", "전기", "사업의 내용")))]
+        context = "\n".join(context_lines[-12:])
+        yield {"start": start, "end": end, "text": text[start:end], "context": context}
+        if end == len(text):
             break
-    return "\n\n".join(chunks)
+        start = end - overlap
 
 
 class DisclosureSource:
@@ -70,13 +76,15 @@ class DisclosureSource:
     def latest(self, company, end_year):
         # Pick the latest annual period no later than the requested analysis year.
         rows = []
-        for page in range(1, 21):
+        page = 1
+        while True:
             data = self.client.json_data("list.json", corp_code=company.code,
                 bgn_de=f"{end_year}0101", end_de=date.today().strftime("%Y%m%d"),
                 pblntf_detail_ty="A001", last_reprt_at="Y", page_count="100", page_no=str(page))
             rows.extend(data.get("list", []))
             if page >= int(data.get("total_page", 1)):
                 break
+            page += 1
         candidates = []
         for row in rows:
             match = re.search(r"사업보고서\s*\((\d{4})\.12\)", row.get("report_nm", ""))
