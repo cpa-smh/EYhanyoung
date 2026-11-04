@@ -54,8 +54,8 @@ def load_snapshot(path):
     if type(start) is not int or type(end) is not int or end - start != 2 or start < 2016:
         raise ValueError("스냅샷 분석 기간은 2016년 이후 연속 3개년이어야 합니다.")
     companies = data.get("companies")
-    if not isinstance(companies, list) or not 2 <= len(companies) <= 11:
-        raise ValueError("스냅샷에 대상기업과 비교기업 1~10개가 필요합니다.")
+    if not isinstance(companies, list) or not 1 <= len(companies) <= 11:
+        raise ValueError("스냅샷에 대상기업과 비교기업 0~10개가 필요합니다.")
     seen = set()
     for i, company in enumerate(companies):
         if not isinstance(company, dict) or not all(k in company for k in ("code", "name", "stock_code", "role", "profile", "years")):

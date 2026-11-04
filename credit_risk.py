@@ -33,7 +33,7 @@ def load_credit_notes(path):
                 or not str(row.get("source_ref", "")).strip()):
             raise ValueError("주석에 CFS/KRW, 범위, 순액·총액 구분, 날짜, 접수번호, HTTPS 출처와 주석 위치가 필요합니다.")
         item = dict(row)
-        for field in NUMERIC_FIELDS:
+        for field in (*NUMERIC_FIELDS, "opening_allowance"):
             value = row.get(field)
             parsed = amount(value)
             if value is not None and parsed is None:
@@ -86,7 +86,8 @@ def assess_receivables(mapped, note, receipts, scope="total_trade"):
         result["reason"] = "확인 가능한 순액 없음; 통합 계정으로 대체하지 않음"
         return result
     result.update({k: note.get(k) for k in NUMERIC_FIELDS})
-    result.update(net=net, status="OK", reason="주석 출처로 순액 및 범위 확인(사용자 입력)")
+    result.update(net=net, status="OK", reason="주석 출처로 순액 및 범위 확인(" + note.get("origin", "사용자 입력") + ")")
+    result["opening_allowance"] = note.get("opening_allowance")
     result["reconciliation"] = gross - allowance - net if gross is not None and allowance is not None else None
     return result
 
@@ -102,7 +103,12 @@ def credit_diagnostics(current, previous, current_ratios, previous_ratios):
         if coverage > old_coverage and turnover > old_turnover:
             findings.append("순액 회전율과 충당금 설정률 동반 상승: 순액 감소 효과와 실제 회수 개선을 구분 검토")
     # 충당금 증감은 ECL 비용과 다르다. 모든 변동항목이 있을 때만 대사.
-    components = [prev.get("allowance"), curr.get("ecl_expense"), curr.get("writeoffs"), curr.get("other_movements"), curr.get("allowance")]
+    opening = curr.get("opening_allowance")
+    if opening is None:
+        opening = prev.get("allowance")
+    elif prev.get("allowance") is not None and abs(opening - prev["allowance"]) > 1:
+        findings.append("당기 주석 기초 충당금과 전기 공시 기말 충당금 불일치: 재작성/범위 변경 확인")
+    components = [opening, curr.get("ecl_expense"), curr.get("writeoffs"), curr.get("other_movements"), curr.get("allowance")]
     delta = None
     if all(v is not None for v in components):
         opening, expense, writeoff, other, closing = components
