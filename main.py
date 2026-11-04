@@ -1,4 +1,4 @@
-"""Windows/Python 3.12 실행 시작점. GPT/OpenAI API를 사용하지 않는다."""
+"""OpenDART 분석과 선택적 OpenAI 공시 분석의 실행 시작점."""
 import argparse
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -24,6 +24,8 @@ def parse_args(argv=None):
     source.add_argument("--demo", action="store_true", help="명확히 표시한 합성 테스트 자료로 시연")
     parser.add_argument("--target", help="대상기업명. 동명 기업: 기업명@고유번호")
     parser.add_argument("--peers", nargs="+", help="사용자가 선택한 비교기업명 1~10개 (권장 5~10개)")
+    parser.add_argument("--no-ai", action="store_true", help="AI 없이 기존 수동 분석 실행")
+    parser.add_argument("--cache-dir", type=Path, default=ROOT / ".cache", help="공시 원문 및 AI 응답 캐시")
     parser.add_argument("--start-year", type=int, help="시작연도. 생략 시 종료연도-2")
     parser.add_argument("--end-year", type=int, default=2025, help="마지막 사업연도, 기본 2025")
     parser.add_argument("--credit-notes", type=Path, help="출처 있는 매출채권/손실충당금 주석 JSON")
@@ -65,6 +67,10 @@ def main(argv=None):
         from excel_report import write_report
         configure_font(args.font)  # 긴 API 수집 전에 환경 오류 확인
         note_path = args.credit_notes
+        ai = None
+        documents = {}
+        automatic_notes = {}
+        ai_result = {"peer_selection": {"mode": "수동", "peers": []}, "credit": [], "explanations": [], "errors": []}
         if args.demo:
             from sample_data import synthetic_inputs
             snapshot, synthetic_notes = synthetic_inputs(start, end)
@@ -78,17 +84,51 @@ def main(argv=None):
                 print("합성 테스트 스냅샷 재현입니다. 실제 공시가 아닙니다.")
         else:
             target = args.target or input("대상기업 정확한 이름: ").strip()
-            peers = args.peers or [p.strip() for p in input("비교기업 이름(쉼표 구분, 권장 5~10개): ").split(",") if p.strip()]
-            if not 1 <= len(peers) <= 10:
+            peers = args.peers or []
+            if args.no_ai and not peers:
+                raise ValueError("--no-ai 사용 시 --peers를 지정하세요.")
+            if len(peers) > 10:
                 raise ValueError("비교기업은 1~10개를 입력하세요. IQR에는 지표별 유효 비교기업 5개 이상이 필요합니다.")
             load_dotenv(ROOT / ".env", override=False)
             client = DartClient(os.getenv("OPENDART_API_KEY", ""))
             try:
                 index = client.companies()
                 companies = [resolve_spec(index, spec) for spec in (target, *peers)]
+                if not args.no_ai:
+                    from ai_client import AIClient, AIError
+                    from ai_analysis import select_peers, collect_credit
+                    from disclosure_source import DisclosureSource
+                    ai = AIClient(args.cache_dir)
+                    source = DisclosureSource(client, args.cache_dir)
+                    if not peers:
+                        try:
+                            selected, selection, target_doc = select_peers(ai, source, index, companies[0], end)
+                            companies.extend(selected)
+                            ai_result["peer_selection"] = selection
+                            documents[companies[0].code, target_doc["year"]] = target_doc
+                        except (AIError, DartError) as error:
+                            ai_result["peer_selection"] = {"mode": "AI 선정 실패", "peers": [], "limitations": str(error)}
+                            ai_result["errors"].append(str(error))
+                            print(f"AI peer 선정 유보: {error}; 대상기업 시계열 분석을 계속합니다.")
                 if len({c.code for c in companies}) != len(companies):
                     raise ValueError("대상기업과 비교기업은 중복 없이 입력하세요.")
                 snapshot = collect(client, companies, start, end)
+                if ai and ai.key:
+                    automatic_notes, ai_result["credit"], credit_docs = collect_credit(
+                        ai, source, snapshot, load_credit_notes(note_path), args.receivables_scope, out)
+                    documents.update(credit_docs)
+                    # Manual notes still allow business evidence for explanations.
+                    for company in snapshot["companies"]:
+                        key = (company["code"], end)
+                        if key not in documents:
+                            receipts = {r.get("rcept_no") for r in company["years"].get(str(end), {}).get("full", []) if r.get("sj_div") in ("BS", "IS", "CIS")}
+                            if len(receipts) == 1:
+                                try:
+                                    documents[key] = source.read(next(iter(receipts)), *key)
+                                except DartError as error:
+                                    ai_result["errors"].append(str(error))
+                elif ai:
+                    ai_result["errors"].append("OPENAI_API_KEY 없음: ECL 자동 추출·해설 미실행")
             finally:
                 client.close()
         snapshot_path = out / "raw_snapshot.json"
@@ -98,10 +138,21 @@ def main(argv=None):
             (out / "credit_notes.json").write_bytes(note_path.read_bytes())
             note_path = out / "credit_notes.json"
         notes = load_credit_notes(note_path)
+        if automatic_notes:
+            notes = {**automatic_notes, **notes}  # Manual company/year records take precedence.
+            note_path = out / "credit_notes.json"
+            note_path.write_text(json.dumps({"schema_version": 1, "records": list(notes.values())}, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         valid_note_keys = {(c["code"], y) for c in snapshot["companies"] for y in range(start - 1, end + 1)}
         if set(notes) - valid_note_keys:
             raise ValueError("주석 파일에 분석 범위 밖 기업/연도가 있습니다. 입력 오류를 확인하세요.")
         analysis = analyze(snapshot, notes, args.receivables_scope, turnover, margin)
+        if ai:
+            from ai_analysis import explain
+            ai_result["explanations"] = explain(ai, analysis, documents)
+            analysis["ai"] = ai_result
+            (out / "ai_analysis.json").write_text(json.dumps(ai_result, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+            # Store exactly the excerpts/source evidence sent to the AI for traceability.
+            (out / "ai_documents.json").write_text(json.dumps(list(documents.values()), ensure_ascii=False, indent=2), encoding="utf-8")
         charts, font = generate_charts(analysis, snapshot, out / "charts", args.font)
         manifest = {"schema_version": 1, "created_at": datetime.now().astimezone().isoformat(),
                     "source": "synthetic" if snapshot["synthetic"] else "snapshot replay" if args.snapshot else "OpenDART live",
@@ -110,7 +161,9 @@ def main(argv=None):
                     "snapshot_sha256": file_hash(snapshot_path), "notes_sha256": file_hash(note_path) if note_path else None,
                     "receivables_scope": args.receivables_scope, "turnover_change": str(turnover), "margin_change_pp": str(margin),
                     "font": font, "start_year": start, "end_year": end,
-                    "peer_selection": "사용자가 선택한 비교기업; 업종 전체 표본 아님"}
+                    "peer_selection": ai_result["peer_selection"]["mode"] + "; 업종 전체 표본 아님",
+                    "ai_model": ai.model if ai else None,
+                    "ai_errors": ai_result["errors"]}
         manifest_path = out / "manifest.json"
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
         workbook = write_report(out / f"peer_financial_ratio_analysis_{end}.xlsx", snapshot, analysis, charts, manifest)

@@ -24,8 +24,8 @@ def write_report(path, snapshot, analysis, chart_paths, metadata):
     book = Workbook()
     book.remove(book.active)
     book.properties.title = "동종기업 재무비율 비교 및 이상치 검토"
-    book.properties.description = "합성 테스트 데이터" if snapshot["synthetic"] else "OpenDART API 및 출처 있는 사용자 주석 자료"
-    tag = "합성 TEST · 실제 공시 아님" if snapshot["synthetic"] else "OpenDART · 사용자 선택 비교기업"
+    book.properties.description = "합성 테스트 데이터" if snapshot["synthetic"] else "OpenDART API 및 출처 있는 주석 자료"
+    tag = "합성 TEST · 실제 공시 아님" if snapshot["synthetic"] else "OpenDART · " + metadata.get("peer_selection", "선택 비교기업")
 
     def table(name, headers, rows, formats=None):
         ws = book.create_sheet(name)
@@ -141,7 +141,7 @@ def write_report(path, snapshot, analysis, chart_paths, metadata):
     visual.freeze_panes = None
 
     methods = [
-        ("목적", "사용자 선택 동종기업 비교 및 추가 검토 신호. 통계적 이상치는 회계부정/오류 판단이 아님."),
+        ("목적", "AI 또는 사용자 선택 동종기업 비교 및 추가 검토 신호. 통계적 이상치는 회계부정/오류 판단이 아님."),
         ("표본", "기준 평균·중앙값·IQR은 비교기업만 포함, 대상기업 제외. 비교기업 자신을 평가할 때는 기준집단에 자신도 포함."),
         ("순위", "대상기업+유효 비교기업 내 내림차순 경쟁순위(동률 1,1,3). 높은 값이 항상 좋은 것은 아님."),
         ("분석범위", "연결 CFS/KRW, 12월 결산 국내 상장 비금융. 기타채권/계약자산 통합 금액 미사용."),
@@ -178,7 +178,7 @@ def write_report(path, snapshot, analysis, chart_paths, metadata):
         credit = r["credit"]
         previous = lookup[r["code"], r["year"] - 1]["credit"]
         credit_rows.append([r["name"], r["year"], analysis["scope"], credit["gross"], credit["allowance"], credit["net"], credit["reconciliation"],
-                            previous.get("allowance"), credit["ecl_expense"], credit["writeoffs"], credit["recoveries"], credit["other_movements"], r["rollforward_difference"],
+                            credit.get("opening_allowance") if credit.get("opening_allowance") is not None else previous.get("allowance"), credit["ecl_expense"], credit["writeoffs"], credit["recoveries"], credit["other_movements"], r["rollforward_difference"],
                             r["ratios"]["allowance_ratio"], r["ratios"]["gross_ar_turnover"], credit["status"], credit["reason"],
                             "; ".join(r["credit_findings"]), credit["source_ref"], credit["source_url"]])
     cr = table("신용손실 검토", ["기업명", "사업연도", "채권 범위", "매출채권 총액", "기말 손실충당금", "매출채권 순액", "총액-충당금-순액", "기초 충당금", "ECL 비용/환입", "제각", "회수액(별도)", "기타 충당금 변동", "충당금 대사 차이", "충당금 설정률", "총액 회전율(배)", "주석 확인 상태", "확인 사유", "검토 신호", "주석 위치", "출처 URL"], credit_rows,
@@ -201,6 +201,36 @@ def write_report(path, snapshot, analysis, chart_paths, metadata):
     mapping.column_dimensions["E"].width = 48
     checks = table("수치검증", ["기업명", "사업연도", "검증", "차이(원)", "상태", "기준"], check_rows, {4: MONEY})
     checks.conditional_formatting.add(f"A5:F{max(5, checks.max_row)}", FormulaRule(formula=['$E5="FAIL"'], fill=candidate_fill))
+
+    if "ai" in analysis:
+        ai = analysis["ai"]
+        selection = ai["peer_selection"]
+        peer_rows = [[r["name"], r["code"], r["reason"], r["differences"], r["target_quote"], r["peer_quote"],
+                      r["target_source_url"], r["source_url"]] for r in selection.get("peers", [])]
+        peer_rows.append(["선정 방식/한계", selection["mode"], selection.get("limitations", ""),
+                          "; ".join(selection.get("errors", []) + ai.get("errors", [])), "", "", "", ""])
+        table("AI peer 선정", ["기업명", "고유번호", "선정 이유", "차이점/한계", "대상기업 근거", "비교기업 근거", "대상 공시", "비교 공시"], peer_rows)
+        explanation_rows = []
+        for r in ai["explanations"]:
+            f = r["finding"]
+            explanation_rows.append([f["name"], f["year"], r["kind"], METRICS[f["metric"]][0],
+                f["value"], f["flag"], json.dumps(f, ensure_ascii=False, default=str), r["status"],
+                r.get("meaning", ""), r.get("impact", ""), r.get("hypotheses", ""),
+                json.dumps(r.get("confirmed_facts", []), ensure_ascii=False)])
+        table("AI 이상치 해설", ["기업", "연도", "비교 유형", "지표", "실제값", "Python 판정", "판단 수치·기준", "실행 상태", "의미", "가능한 영향", "원인 가설(미확인)", "공시 확인 사실·출처"], explanation_rows)
+        credit_evidence = []
+        for r in ai["credit"]:
+            record = r.get("record", {})
+            credit_evidence.append([r["company"], r["year"], r["status"], r.get("reason", ""),
+                record.get("source_url", ""), json.dumps(record.get("evidence", {}), ensure_ascii=False),
+                "금액은 신용손실 검토 시트의 검증 결과를 확인"])
+        table("AI ECL 추출 근거", ["기업", "연도", "추출 상태", "실패 이유", "공시 링크", "항목별 단위·원문 인용", "계산 반영"], credit_evidence)
+        for name in ("AI peer 선정", "AI 이상치 해설", "AI ECL 추출 근거"):
+            ws = book[name]
+            for col in range(3, ws.max_column + 1):
+                ws.column_dimensions[get_column_letter(col)].width = 55
+            for row in range(5, ws.max_row + 1):
+                ws.row_dimensions[row].height = 150
 
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)

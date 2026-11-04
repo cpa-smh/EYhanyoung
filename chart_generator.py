@@ -49,7 +49,7 @@ def generate_charts(analysis, snapshot, output_dir, font_path=None):
         ax.set_xticks(range(len(subset)), [r["name"] for r in subset], rotation=25, ha="right")
         ax.set_title(f"{prefix}{year}년 {label} 비교", loc="left", fontweight="bold", pad=16)
         ax.set_ylabel(f"{label} ({unit})")
-        ax.set_xlabel(f"사용자 선택 기업 | 유효 비교기업 n={stats['n']} | IQR 판정은 지표별 n≥5 및 IQR>0")
+        ax.set_xlabel(f"선택 비교기업 | 유효 비교기업 n={stats['n']} | IQR 판정은 지표별 n≥5 및 IQR>0")
         ax.grid(axis="y", alpha=.15)
         ax.set_axisbelow(True)
         ax.legend(handles=[Patch(color="#173F5F", label="대상기업"), Patch(color="#5A9AAB", label="비교기업"),
